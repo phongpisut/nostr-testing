@@ -54,12 +54,14 @@ function Game({ channel, isHost }) {
 	const [glow, setGlow] = useState(''); // grid flash color on catch
 	const [announce, setAnnounce] = useState('');
 	const [endedScores, setEndedScores] = useState({});
+	const [others, setOthers] = useState({});
 
 	const fishesRef = useRef([]);
 	const scoresRef = useRef({});
 	const timeRef = useRef(GAME_SECONDS);
 	const phaseRef = useRef('lobby');
 	const loopRef = useRef(null);
+	const lastPosPub = useRef(0);
 
 	// rod state
 	const [poleX, setPoleX] = useState(50);
@@ -124,6 +126,7 @@ useEffect(() => {
 		if (type === 'start' && !isHost) beginCountdown();
 		else if (type === 'state') applyState(content);
 		else if (type === 'hit') onHit(content);
+		else if (type === 'pos') setOthers((o) => ({ ...o, [pubkey]: content }));
 		else if (type === 'end') { setPhase('ended'); setEndedScores(content.scores || {}); }
 		else if (type === 'catch' && isHost) resolveCatch(pubkey, content);
 	}
@@ -202,7 +205,14 @@ useEffect(() => {
 	}, []);
 
 	function move(dir) {
-		setPoleX((x) => { const nx = Math.max(2, Math.min(98, x + (dir === 'left' ? -5 : 5))); poleXRef.current = nx; return nx; });
+		setPoleX((x) => { const nx = Math.max(2, Math.min(98, x + (dir === 'left' ? -5 : 5))); poleXRef.current = nx; publishPos(); return nx; });
+	}
+
+	function publishPos(force) {
+		const now = Date.now();
+		if (!force && now - lastPosPub.current < 180) return;
+		lastPosPub.current = now;
+		publish(relaysRef.current, sk, channel, 'pos', { x: poleXRef.current, depth: chargeRef.current });
 	}
 
 	function startCharge() {
@@ -223,6 +233,7 @@ useEffect(() => {
 		setCasting(false);
 		clearInterval(chargeTimer.current);
 		const depth = chargeRef.current;
+		publishPos(true);
 		const fish = nearestFish(poleXRef.current, depth);
 		if (fish) {
 			publish(relaysRef.current, sk, channel, 'catch', { fishId: fish.id });
@@ -267,7 +278,7 @@ useEffect(() => {
 			<section className="arena">
 				<div
 					className="ocean"
-					onPointerMove={(e) => { const r = e.currentTarget.getBoundingClientRect(); const nx = ((e.clientX - r.left) / r.width) * 100; poleXRef.current = nx; setPoleX(nx); }}
+					onPointerMove={(e) => { const r = e.currentTarget.getBoundingClientRect(); const nx = ((e.clientX - r.left) / r.width) * 100; poleXRef.current = nx; setPoleX(nx); publishPos(); }}
 					style={{ ['--glow']: glow || 'transparent' }}
 				>
 					<Ripples />
@@ -285,6 +296,16 @@ useEffect(() => {
 							<span className="fish-score">+{f.score}</span>
 						</div>
 					))}
+
+					{Object.entries(others)
+						.filter(([p]) => p !== pk)
+						.map(([p, pos]) => (
+							<div key={p} className="rod other" style={{ left: `${pos.x}%`, opacity: 0.3 }}>
+								<div className="rod-line" style={{ height: `${pos.depth || 0}%` }} />
+								<div className="hook" style={{ top: `${pos.depth || 0}%` }}>🪝</div>
+								<div className="rod-label" style={{ background: colorFor(p) }}>{shortId(p)}</div>
+							</div>
+						))}
 
 					<div className="rod" style={{ left: `${poleX}%` }}>
 						<div className="rod-line" style={{ height: `${casting ? gaugePct : 0}%` }} />

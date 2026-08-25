@@ -51,6 +51,12 @@ header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-
 
 /* rod + hook */
 .rod { position: absolute; top: 0; bottom: 0; width: 0; z-index: 5; }
+.rod.other { pointer-events: none; }
+.rod-label {
+	position: absolute; top: -4px; left: 50%; transform: translateX(-50%);
+	font-size: 9px; color: #fff; padding: 0 5px; border-radius: 8px;
+	white-space: nowrap; pointer-events: none;
+}
 .rod-line {
 	position: absolute; left: -1px; width: 2px; background: linear-gradient(#fff, #9adcff);
 	box-shadow: 0 0 4px #bfe9ff88; transition: height 0.05s linear;
