@@ -215,6 +215,13 @@ useEffect(() => {
 		publish(relaysRef.current, sk, channel, 'pos', { x: poleXRef.current, depth: chargeRef.current });
 	}
 
+	// keep your hook visible to others (broadcast position periodically)
+	useEffect(() => {
+		publishPos(true);
+		const iv = setInterval(() => publishPos(true), 500);
+		return () => clearInterval(iv);
+	}, [channel]);
+
 	function startCharge() {
 		holdingRef.current = true;
 		setCasting(true);
