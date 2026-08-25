@@ -106,7 +106,7 @@ function Game({ channel, isHost }) {
 		phaseRef.current = 'playing';
 		setPhase('playing');
 		timeRef.current = GAME_SECONDS;
-		announceOnce({ text: 'GO!' }, '');
+		announceOnce('GO!');
 	}
 
 useEffect(() => {
@@ -133,7 +133,7 @@ useEffect(() => {
 		setFishes(fishesRef.current);
 		setScores(s || scoresRef.current);
 		flash(player);
-		announceOnce({ text: `${colorName(player)} caught +${score} 🎣`, color: colorFor(player) });
+		announceOnce(`${colorName(player)} caught +${score} 🎣`, colorFor(player));
 	}
 
 	function flash(color) {
@@ -152,7 +152,7 @@ useEffect(() => {
 		setScores(next);
 		publish(relaysRef.current, sk, channel, 'hit', { fishId, player, score, scores: next });
 		flash(colorFor(player));
-		announceOnce({ text: `${colorName(player)} caught +${score} 🎣`, color: colorFor(player) });
+		announceOnce(`${colorName(player)} caught +${score} 🎣`, colorFor(player));
 	}
 
 	// host game loop
