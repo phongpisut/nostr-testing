@@ -1,132 +1,102 @@
-# Nostr Channel Chat
+# 🎣 Nostr Fishing
 
-A minimal realtime Nostr chat client built with Svelte 5 + Vite + [nostr-tools](https://www.npmjs.com/package/nostr-tools).
+A realtime multiplayer fishing game over the Nostr network, built with
+**React 19 + Vite + [nostr-tools](https://www.npmjs.com/package/nostr-tools)**.
 
-Unlike a normal Nostr client that shows the global timeline, this app scopes
-messages to a **private channel**: every event is tagged with a channel id and
-the client only subscribes to events carrying that tag. Only people who know
-the channel id can read or post to it.
+Players share a room over low-traffic Nostr relays. One player is the **host**
+and runs the authoritative game state (fish positions, score values, timer);
+everyone else competes on a shared realtime arena.
 
-## Features
+## Gameplay
 
-- Realtime send/receive over WebSocket (no polling)
-- Channel-scoped messaging via `#t` tags, not the public firehose
-- Automatic local keypair generation (persisted in `localStorage`)
-- Low-traffic relays to keep noise down
-- Join any channel by pasting its id
+1. **Create a room** to become the **host**, or **paste a room id** to join as a player.
+2. The host presses **▶ Play** — a 3‑2‑1 countdown runs for everyone.
+3. Fish swim left/right across the ocean. Host assigns each fish a score (+1 to +9).
+4. Move your fishing pole (← → arrow keys or click) and press **SPACE** when the
+   pole is close to a fish to catch it.
+5. Catches are broadcast to everyone: the fish leaves the pool, the catcher earns
+   its score, and the total scoreboard updates live.
 
-## Getting started
+Each player is auto-assigned a distinct color (derived from their Nostr pubkey).
+
+## How it works over Nostr
+
+Game messages ride on Nostr **kind‑1** events scoped to a room via a `["t", room]`
+tag and a `["g", type]` tag classifying the payload (JSON in `content`):
+
+| Type   | Sent by | Payload                       | Purpose                               |
+| ------ | ------- | ----------------------------- | ------------------------------------- |
+| `start`| host    | `{ countdown }`               | Begin 3‑2‑1 countdown                 |
+| `state`| host    | fish positions, time, scores  | Authoritative game state broadcast    |
+| `catch`| player  | `{ fishId }`                  | Attempted catch                       |
+| `hit`  | host    | `{ fishId, player, score, scores }` | Catch confirmation + score out |
+| `end`  | host    | `{ scores }`                  | Game over leaderboard                 |
+
+The **host is the source of truth**: it owns the fish pool, moves fish each tick,
+resolves catch attempts, and redistributes scores. Players render the latest host
+state, attempt local catches, and learn the outcome from `hit` broadcasts. Color
+and identity come from each player's Nostr keypair (stored in `localStorage`).
+
+### Nostr notes
+
+- Relays: `wss://nos.lol`, `wss://relay.mostr.pub` — free, low-traffic, support
+  kind‑1 `#t` indexing.
+- Subscriptions use `AbstractRelay` directly because `SimplePool.subscribeMany`
+  emits a malformed REQ frame (`["REQ","id",[{...}]]`) that strict relays reject.
+- Events are deduped by id and only messages tagged with the active room are shown.
+
+## Architecture
+
+```text
+                 ┌──────────────────── Browser ────────────────────┐
+                 │                                                   │
+                 │  HOST client          │      PLAYER client(s)    │
+                 │  ──────────────       │      ───────────────      │
+                 │  fish pool (owner)    │      render fish + pole    │
+                 │  game loop (tick 400ms)│      move pole ← → space  │
+                 │  resolve catches      │      send  catch event     │
+                 └───────┬───────────────┴──────────┬────────────────┘
+                         │  publish                  │  publish
+                         ▼                           ▼
+                 ┌──────────────────────────────────────────────┐
+                 │     Nostr relays (nos.lol, relay.mostr.pub)  │
+                 │   kind-1 events tagged [#g:type, #t:room]     │
+                 └──────────────────────────────────────────────┘
+                         ▲           ▲          ▲
+                         │           │          │
+              start/state │     catch  │    hit/end
+              (host→all)  │  (player→host)  (host→all)
+```
+
+Message flow for one catch:
+
+```text
+player presses SPACE near fish A
+   │
+   ▼
+player publishes catch {fishId:A}  ──►  host
+   │
+   ▼
+host validates A is still in pool, +score to player
+   │
+   ├─► broadcast hit {fishId:A, player, score, scores}
+   └─► remove A from pool
+        │
+        ▼
+   all clients: A disappears, scoreboard updates, toast "on fire caught +5"
+```
+
+## Run
 
 ```bash
 npm install
 npm run dev
 ```
 
-Load the app in two tabs, copy the channel id from the first into the second,
-and chat in realtime.
-
-## Nostr implementation
-
-This project uses the [`nostr-tools`](https://www.npmjs.com/package/nostr-tools) library:
-
-| Concern              | Approach                                                                 |
-| -------------------- | ------------------------------------------------------------------------ |
-| Key generation       | `generateSecretKey()` → hex, persisted in `localStorage`                 |
-| Pubkey               | `getPublicKey(sk)`                                                        |
-| Signing              | `finalizeEvent(..., sk)` produces a signed kind-1 event                  |
-| Subscription         | `AbstractRelay.subscribe(...)` per relay (see note below)                 |
-| Publishing           | `relay.publish(event)` to every connected relay                           |
-| Channel scoping      | `["t", <channelId>]` tag on every event; filter with `"#t": [channelId]`  |
-
-### Why not `SimplePool`?
-
-`SimplePool.subscribeMany` in the current `nostr-tools` line double-wraps the
-filter array and emits a malformed REQ frame:
-
-```
-["REQ","sub:1",[{...}]]   ❌ non-standard, rejected by strict relays
-```
-
-`AbstractRelay` sends the spec-compliant single-object form:
-
-```
-["REQ","sub:1",{...}]     ✅ accepted
-```
-
-The app therefore subscribes via `AbstractRelay` directly and deduplicates
-events across relays by event id.
-
-## Relay servers (low-traffic, free)
-
-| Relay                 | URL                       | Notes                                  |
-| --------------------- | ------------------------- | -------------------------------------- |
-| Nos.lol               | `wss://nos.lol`           | Free, supports kind 1 + `#t` indexing  |
-| Mostr.pub             | `wss://relay.mostr.pub`   | Free, supports kind 1 (Mastodon bridge)|
-
-Relays tested and excluded:
-
-| Relay                 | Reason for exclusion                     |
-| --------------------- | ---------------------------------------- |
-| `purplepag.es`        | Blocks kind 1 (pubkey metadata only)     |
-| `nostr.land`          | Paywall / not free                       |
-| `relay.nostr.band`    | High traffic                             |
-| `relay.primal.net`    | High traffic                             |
-| `relay.damus.io`      | High traffic                             |
-| `nostr.wine`          | Requires sign-in                         |
-
-## Architecture
-
-```text
-                  ┌────────────────────────────────────────────┐
-                  │                 Browser                    │
-                  │                                            │
-                  │  ┌──────────────────────────────────────┐  │
-                  │  │         App.svelte (Svelte 5)        │  │
-                  │  │                                      │  │
-                  │  │  key ──generateSecretKey──► sk (hex)│  │
-                  │  │  sk ──getPublicKey───────► pk        │  │
-                  │  │                                      │  │
-                  │  │  send: finalizeEvent(tags:[t,chan])  │  │
-                  │  │                                    ▼  │  │
-                  │  └──────────────────────────────────────┘  │
-                  │              │       │                     │
-                  │        publish│       │subscribe           │
-                  │              ▼       ▼                     │
-                  └───────────┬──┴───────┴──┬──────────────────┘
-                              │              │  WebSocket (WSS)
-                  ┌───────────▼──┐       ┌───▼───────────┐
-                  │  nos.lol     │       │  relay.mostr  │
-                  │  (relay)     │       │  (relay)       │
-                  └──────┬───────┘       └───────┬────────┘
-                         │                       │
-                         │      kind-1 events    │
-                         │    tagged [#t: chan]  │
-                         └───────────┬───────────┘
-                                     ▼
-                 Other clients sharing the same
-                 channel id see the messages too
-```
-
-Message flow for one chat message:
-
-```text
-You type "hello"
-   │
-   ▼
-finalizeEvent(kind:1, tags:[["t","mychan"]], content:"hello", sk)
-   │
-   ├─► publish ──► nos.lol ─────────┐
-   └─► publish ──► relay.mostr.pub ─┴──► relay stores event
-   │
-   ▲
-subscribe({kinds:[1], "#t":["mychan"]})  ◄── your other tab / friends
-   │
-   └─ onevent ──► dedupe by id ──► render
-```
+Open two tabs, create a room in one and join with the same id in the other.
 
 ## Tech notes
 
-- Keys and the current channel id live in `localStorage`; clearing them
-  generates a fresh identity/channel.
-- Only the last 100 events are kept in memory.
+- Keys and current room live in `localStorage`; clearing them yields a new identity.
+- The room creator (host) is remembered on reload via `nostr-fishing-host`.
 - `dist/` and `node_modules/` are gitignored.
