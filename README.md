@@ -1,43 +1,132 @@
-# Svelte + Vite
+# Nostr Channel Chat
 
-This template should help get you started developing with Svelte in Vite.
+A minimal realtime Nostr chat client built with Svelte 5 + Vite + [nostr-tools](https://www.npmjs.com/package/nostr-tools).
 
-## Recommended IDE Setup
+Unlike a normal Nostr client that shows the global timeline, this app scopes
+messages to a **private channel**: every event is tagged with a channel id and
+the client only subscribes to events carrying that tag. Only people who know
+the channel id can read or post to it.
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode).
+## Features
 
-## Need an official Svelte framework?
+- Realtime send/receive over WebSocket (no polling)
+- Channel-scoped messaging via `#t` tags, not the public firehose
+- Automatic local keypair generation (persisted in `localStorage`)
+- Low-traffic relays to keep noise down
+- Join any channel by pasting its id
 
-Check out [SvelteKit](https://github.com/sveltejs/kit#readme), which is also powered by Vite. Deploy anywhere with its serverless-first approach and adapt to various platforms, with out of the box support for TypeScript, SCSS, and Less, and easily-added support for mdsvex, GraphQL, PostCSS, Tailwind CSS, and more.
+## Getting started
 
-## Technical considerations
-
-**Why use this over SvelteKit?**
-
-- It brings its own routing solution which might not be preferable for some users.
-- It is first and foremost a framework that just happens to use Vite under the hood, not a Vite app.
-
-This template contains as little as possible to get started with Vite + Svelte, while taking into account the developer experience with regards to HMR and intellisense. It demonstrates capabilities on par with the other `create-vite` templates and is a good starting point for beginners dipping their toes into a Vite + Svelte project.
-
-Should you later need the extended capabilities and extensibility provided by SvelteKit, the template has been structured similarly to SvelteKit so that it is easy to migrate.
-
-**Why include `.vscode/extensions.json`?**
-
-Other templates indirectly recommend extensions via the README, but this file allows VS Code to prompt the user to install the recommended extension upon opening the project.
-
-**Why enable `checkJs` in the JS template?**
-
-It is likely that most cases of changing variable types in runtime are likely to be accidental, rather than deliberate. This provides advanced typechecking out of the box. Should you like to take advantage of the dynamically-typed nature of JavaScript, it is trivial to change the configuration.
-
-**Why is HMR not preserving my local component state?**
-
-HMR state preservation comes with a number of gotchas! It has been disabled by default in both `svelte-hmr` and `@sveltejs/vite-plugin-svelte` due to its often surprising behavior. You can read the details [here](https://github.com/sveltejs/svelte-hmr/tree/master/packages/svelte-hmr#preservation-of-local-state).
-
-If you have state that's important to retain within a component, consider creating an external store which would not be replaced by HMR.
-
-```js
-// store.js
-// An extremely simple external store
-import { writable } from 'svelte/store'
-export default writable(0)
+```bash
+npm install
+npm run dev
 ```
+
+Load the app in two tabs, copy the channel id from the first into the second,
+and chat in realtime.
+
+## Nostr implementation
+
+This project uses the [`nostr-tools`](https://www.npmjs.com/package/nostr-tools) library:
+
+| Concern              | Approach                                                                 |
+| -------------------- | ------------------------------------------------------------------------ |
+| Key generation       | `generateSecretKey()` → hex, persisted in `localStorage`                 |
+| Pubkey               | `getPublicKey(sk)`                                                        |
+| Signing              | `finalizeEvent(..., sk)` produces a signed kind-1 event                  |
+| Subscription         | `AbstractRelay.subscribe(...)` per relay (see note below)                 |
+| Publishing           | `relay.publish(event)` to every connected relay                           |
+| Channel scoping      | `["t", <channelId>]` tag on every event; filter with `"#t": [channelId]`  |
+
+### Why not `SimplePool`?
+
+`SimplePool.subscribeMany` in the current `nostr-tools` line double-wraps the
+filter array and emits a malformed REQ frame:
+
+```
+["REQ","sub:1",[{...}]]   ❌ non-standard, rejected by strict relays
+```
+
+`AbstractRelay` sends the spec-compliant single-object form:
+
+```
+["REQ","sub:1",{...}]     ✅ accepted
+```
+
+The app therefore subscribes via `AbstractRelay` directly and deduplicates
+events across relays by event id.
+
+## Relay servers (low-traffic, free)
+
+| Relay                 | URL                       | Notes                                  |
+| --------------------- | ------------------------- | -------------------------------------- |
+| Nos.lol               | `wss://nos.lol`           | Free, supports kind 1 + `#t` indexing  |
+| Mostr.pub             | `wss://relay.mostr.pub`   | Free, supports kind 1 (Mastodon bridge)|
+
+Relays tested and excluded:
+
+| Relay                 | Reason for exclusion                     |
+| --------------------- | ---------------------------------------- |
+| `purplepag.es`        | Blocks kind 1 (pubkey metadata only)     |
+| `nostr.land`          | Paywall / not free                       |
+| `relay.nostr.band`    | High traffic                             |
+| `relay.primal.net`    | High traffic                             |
+| `relay.damus.io`      | High traffic                             |
+| `nostr.wine`          | Requires sign-in                         |
+
+## Architecture
+
+```text
+                  ┌────────────────────────────────────────────┐
+                  │                 Browser                    │
+                  │                                            │
+                  │  ┌──────────────────────────────────────┐  │
+                  │  │         App.svelte (Svelte 5)        │  │
+                  │  │                                      │  │
+                  │  │  key ──generateSecretKey──► sk (hex)│  │
+                  │  │  sk ──getPublicKey───────► pk        │  │
+                  │  │                                      │  │
+                  │  │  send: finalizeEvent(tags:[t,chan])  │  │
+                  │  │                                    ▼  │  │
+                  │  └──────────────────────────────────────┘  │
+                  │              │       │                     │
+                  │        publish│       │subscribe           │
+                  │              ▼       ▼                     │
+                  └───────────┬──┴───────┴──┬──────────────────┘
+                              │              │  WebSocket (WSS)
+                  ┌───────────▼──┐       ┌───▼───────────┐
+                  │  nos.lol     │       │  relay.mostr  │
+                  │  (relay)     │       │  (relay)       │
+                  └──────┬───────┘       └───────┬────────┘
+                         │                       │
+                         │      kind-1 events    │
+                         │    tagged [#t: chan]  │
+                         └───────────┬───────────┘
+                                     ▼
+                 Other clients sharing the same
+                 channel id see the messages too
+```
+
+Message flow for one chat message:
+
+```text
+You type "hello"
+   │
+   ▼
+finalizeEvent(kind:1, tags:[["t","mychan"]], content:"hello", sk)
+   │
+   ├─► publish ──► nos.lol ─────────┐
+   └─► publish ──► relay.mostr.pub ─┴──► relay stores event
+   │
+   ▲
+subscribe({kinds:[1], "#t":["mychan"]})  ◄── your other tab / friends
+   │
+   └─ onevent ──► dedupe by id ──► render
+```
+
+## Tech notes
+
+- Keys and the current channel id live in `localStorage`; clearing them
+  generates a fresh identity/channel.
+- Only the last 100 events are kept in memory.
+- `dist/` and `node_modules/` are gitignored.
