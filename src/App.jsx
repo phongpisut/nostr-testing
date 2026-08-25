@@ -45,7 +45,6 @@ export default function App() {
 function Game({ channel, isHost }) {
 	const relaysRef = useRef(null);
 	const subsRef = useRef([]);
-	const [ready, setReady] = useState(false);
 
 	const [phase, setPhase] = useState('lobby');
 	const [count, setCount] = useState(3);
@@ -110,23 +109,16 @@ function Game({ channel, isHost }) {
 		announceOnce({ text: 'GO!' }, '');
 	}
 
-	useEffect(() => {
-		relaysRef.current = connect();
-		setReady(true);
-		return () => closeAll();
-	}, []);
-
-	function closeAll() {
-		subsRef.current.forEach((s) => s.close());
-		relaysRef.current?.forEach((r) => r.close());
-		if (loopRef.current) clearInterval(loopRef.current);
-	}
-
-	useEffect(() => {
-		if (!ready) return;
-		subsRef.current = subscribe(relaysRef.current, channel, (m) => handleMsg(m));
-		return () => subsRef.current.forEach((s) => s.close());
-	}, [ready, channel]);
+useEffect(() => {
+		const relays = connect();
+		relaysRef.current = relays;
+		subsRef.current = subscribe(relays, channel, (m) => handleMsg(m));
+		return () => {
+			subsRef.current.forEach((s) => s.close());
+			relays.forEach((r) => r.close());
+			if (loopRef.current) clearInterval(loopRef.current);
+		};
+	}, [channel]);
 
 	function handleMsg({ pubkey, type, content }) {
 		if (type === 'start' && !isHost) beginCountdown();
@@ -165,7 +157,7 @@ function Game({ channel, isHost }) {
 
 	// host game loop
 	useEffect(() => {
-		if (!ready || !isHost || phase !== 'playing') return;
+		if (!isHost || phase !== 'playing') return;
 		loopRef.current = setInterval(() => {
 			fishesRef.current = fishesRef.current.map(stepFish);
 			timeRef.current -= 0.4;
@@ -184,7 +176,7 @@ function Game({ channel, isHost }) {
 			}
 		}, 400);
 		return () => clearInterval(loopRef.current);
-	}, [ready, isHost, phase, channel]);
+	}, [isHost, phase, channel]);
 
 	// keyboard: arrows move X, hold space charges depth
 	useEffect(() => {
